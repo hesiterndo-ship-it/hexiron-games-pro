@@ -1,0 +1,13 @@
+{
+  "app": "hexiron-games",
+  "port": 8080,
+  "build": {
+    "location": "iran"
+  },
+  "disks": [
+    {
+      "name": "data",
+      "mountTo": "/data"
+    }
+  ]
+}

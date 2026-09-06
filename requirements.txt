@@ -1,3 +1,47 @@
-python-telegram-bot[job-queue]==22.8
-python-dotenv==1.0.1
-httpx==0.28.1
+BOT_TOKEN=
+OWNER_ID=0
+# Extra admins besides OWNER_ID, comma separated numeric ids (optional)
+ADMIN_IDS=
+
+# Free games require channel membership
+CHANNEL_ID=@your_channel
+CHANNEL_URL=https://t.me/your_channel
+
+# --- Telegram connectivity through a proxy ---------------------------------
+# REQUIRED if the container is hosted inside Iran: Telegram is blocked there,
+# so without this the bot hangs/crashes on startup trying to reach
+# api.telegram.org, which also takes the health-check server down with it
+# (Liara then reports "container is unhealthy"). Not needed if you're hosting
+# somewhere with direct access to Telegram.
+#   SOCKS5_PROXY_URL=socks5://user:pass@host:1080
+SOCKS5_PROXY_URL=
+
+# --- HEXIRON SALES integration ---------------------------------------------
+# Must point at the running hexiron-sales API service.
+SALES_API_URL=https://your-sales-service.liara.run
+SALES_API_KEY=
+# Product id you create for this bot inside the HEXIRON SALES admin panel.
+# One purchase of this product, per chat, unlocks every Premium game there.
+SALES_PRODUCT_ID=hexiron-games
+# Username (no @) of your HEXIRON SALES telegram bot, used for the buy button.
+SALES_BOT_USERNAME=your_sales_bot
+LICENSE_CACHE_TTL_SECONDS=300
+
+# Persistent storage (Liara disk is mounted at /data, see liara.json)
+DB_PATH=/data/hexiron_games.db
+
+# Commercial settings
+BRAND_NAME=HEXIRON GAMES
+FREE_GAMES=ttt,truth
+COINS_PER_DAILY=25
+REFERRAL_REWARD=100
+
+# Timed phases for Mafia / Werewolf (seconds)
+MAFIA_NIGHT_SECONDS=45
+MAFIA_DAY_SECONDS=60
+WEREWOLF_NIGHT_SECONDS=45
+WEREWOLF_DAY_SECONDS=60
+
+# Broadcast throttling (admin panel -> "پیام همگانی")
+BROADCAST_BATCH_SIZE=25
+BROADCAST_BATCH_DELAY=1

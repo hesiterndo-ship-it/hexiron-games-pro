@@ -29,6 +29,19 @@ if OWNER_ID:
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 CHANNEL_URL = os.getenv("CHANNEL_URL", "").strip()
 
+# --- Telegram connectivity through a proxy ---------------------------------
+# Telegram (api.telegram.org) is blocked from servers hosted inside Iran, so
+# on Liara you MUST set one of these to a reachable SOCKS5/HTTP(S) proxy, e.g.
+#   SOCKS5_PROXY_URL=socks5://user:pass@host:1080
+# Without it, the bot hangs/crashes on startup trying to reach Telegram and
+# Liara reports "container is unhealthy" (the whole process dies, taking the
+# health-check server down with it).
+TELEGRAM_PROXY_URL = (
+    os.getenv("SOCKS5_PROXY_URL", "").strip()
+    or os.getenv("TELEGRAM_PROXY_URL", "").strip()
+    or os.getenv("PROXY_URL", "").strip()
+)
+
 # --- HEXIRON SALES integration -------------------------------------------
 # Must match the real hexiron-sales API: GET {SALES_API_URL}/api/v1/license
 #   ?product=<PRODUCT_ID>&group_id=<chat_id>   header X-API-Key

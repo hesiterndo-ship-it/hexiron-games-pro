@@ -1,11 +1,12 @@
 import logging
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, BRAND_NAME
+from config import BOT_TOKEN, BRAND_NAME, TELEGRAM_PROXY_URL
 from db import init_db, reward
 from admin import admin, admin_callback, handle_admin_text
 from games.engine import get_room, close_room
@@ -72,13 +73,28 @@ async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
     log.error("خطای پردازش‌نشده هنگام رسیدگی به یک آپدیت:", exc_info=context.error)
 
 
+def build_application():
+    builder = Application.builder().token(BOT_TOKEN)
+    if TELEGRAM_PROXY_URL:
+        log.info("اتصال به تلگرام از طریق پراکسی برقرار می‌شود.")
+        # Both the general Bot API calls AND the long-polling getUpdates loop
+        # need to go through the proxy, otherwise polling itself will hang.
+        builder = builder.proxy(TELEGRAM_PROXY_URL).get_updates_proxy(TELEGRAM_PROXY_URL)
+    else:
+        log.warning(
+            "SOCKS5_PROXY_URL تنظیم نشده. اگر سرور روی ایران هاست شده و به "
+            "تلگرام دسترسی مستقیم ندارد، ربات در همین‌جا هنگ می‌کند یا کرش "
+            "می‌کند و health check لیارا ناموفق می‌شود.")
+    return builder.build()
+
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is required")
     init_db()
     threading.Thread(target=health_server, daemon=True).start()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = build_application()
     app.add_error_handler(on_error)
 
     app.add_handler(CommandHandler("start", start))
@@ -97,7 +113,18 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
     log.info("%s در حال راه‌اندازی...", BRAND_NAME)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    backoff = 5
+    while True:
+        try:
+            app.run_polling(allowed_updates=Update.ALL_TYPES)
+            break  # run_polling only returns after a graceful shutdown
+        except Exception as e:
+            log.error(
+                "اتصال به تلگرام برقرار نشد (اگر روی ایران هاست شده‌اید، "
+                "SOCKS5_PROXY_URL را بررسی کنید): %s", e)
+            log.info("تلاش مجدد در %s ثانیه...", backoff)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
 
 if __name__ == "__main__":

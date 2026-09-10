@@ -4,7 +4,7 @@ import logging
 
 from db import reward
 from . import hokm
-from .engine import close_room, card_text
+from .engine import close_room, card_text, is_ai
 
 log = logging.getLogger("hexiron-games.hokm_flow")
 
@@ -33,6 +33,10 @@ async def deal_hand(room, context):
         room.chat_id,
         f"🂠 دست {room.data['hand_number']} — حاکم این دست: {room.names.get(hakem, str(hakem))}\n"
         "در انتظار انتخاب حکم توسط حاکم...")
+    if is_ai(hakem):
+        suit = hokm.ai_choose_trump(room)
+        await trump_chosen(room, context, suit)
+        return
     cards = " | ".join(card_text(c) for c in initial)
     await _safe_dm(context, hakem, f"🃏 کارت‌های شما:\n{cards}\n\nخال حکم را انتخاب کن:",
                     reply_markup=hokm.trump_keyboard(room))
@@ -44,11 +48,18 @@ async def trump_chosen(room, context, suit):
     await context.bot.send_message(room.chat_id, f"👑 حکم این دست: {suit}\nکارت‌ها پخش شد.")
     for uid in room.players:
         await send_hand(room, context, uid)
-    await announce_turn(room, context)
+    if is_ai(room.data["turn"]):
+        ai_uid = room.data["turn"]
+        ai_card = hokm.ai_choose_card(room, ai_uid)
+        await play_card(room, context, ai_uid, ai_card)
+    else:
+        await announce_turn(room, context)
     return True
 
 
 async def send_hand(room, context, uid):
+    if is_ai(uid):
+        return
     hand = room.data["hands"][uid]
     cards = " | ".join(card_text(c) for c in hand)
     turn_note = " (نوبت شماست، کارت را بزنید)" if room.data["turn"] == uid else ""
@@ -86,7 +97,14 @@ async def play_card(room, context, uid, card):
         await deal_hand(room, context)
         return True, None
 
-    # send updated hands to whoever's turn it is now (and to the player who just played)
+    # normal continue: hand off to whoever's turn it is now. If that's an AI
+    # seat, let it play immediately (recursing handles runs of several AI
+    # players in a row); a human turn is the recursion's base case.
+    next_uid = room.data["turn"]
+    if is_ai(next_uid):
+        ai_card = hokm.ai_choose_card(room, next_uid)
+        return await play_card(room, context, next_uid, ai_card)
+
     await send_hand(room, context, uid)
     if room.data["turn"] != uid:
         await send_hand(room, context, room.data["turn"])

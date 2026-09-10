@@ -62,6 +62,30 @@ def player_name(room, uid):
     return room.names.get(uid, str(uid))
 
 
+# --- AI-controlled players (single-player / fill-empty-seats mode) ---------
+# AI players use negative fake ids, scoped to a single room's player list, so
+# they never collide with a real Telegram user id (always positive) and need
+# no separate bookkeeping across rooms.
+
+def is_ai(uid) -> bool:
+    return uid is not None and uid < 0
+
+
+def add_ai_players(room, count, max_players=None):
+    """Fill up to `count` empty seats with AI players. Never exceeds
+    `max_players` (if given) or duplicates an already-added AI slot."""
+    added = []
+    for _ in range(count):
+        if max_players and len(room.players) >= max_players:
+            break
+        n = sum(1 for u in room.players if is_ai(u)) + 1
+        ai_uid = -n
+        room.players.append(ai_uid)
+        room.names[ai_uid] = f"🤖 ربات {n}"
+        added.append(ai_uid)
+    return added
+
+
 # --- Tic-Tac-Toe -----------------------------------------------------------
 
 def ttt_winner(b, x):

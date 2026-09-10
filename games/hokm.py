@@ -172,6 +172,36 @@ def parse_card(token):
     return (suit, rank)
 
 
+# --- AI decisions (used when the hakem or the player to move is a bot seat) -
+
+def ai_choose_trump(room):
+    """Pick the suit the AI hakem has the most of in its initial 5 cards."""
+    from collections import Counter
+    hand = room.data["hands"][room.data["hakem"]]
+    counts = Counter(c[0] for c in hand)
+    return counts.most_common(1)[0][0]
+
+
+def ai_choose_card(room, uid):
+    """Simple-but-sane heuristic: win the trick as cheaply as possible; if it
+    can't be won, shed the lowest legal card (saving trumps); when leading a
+    fresh trick, lead with the strongest non-trump card."""
+    hand = room.data["hands"][uid]
+    trick = room.data["current_trick"]
+    trump = room.data["trump"]
+    lead_suit = room.data["lead_suit"]
+    legal = legal_cards(hand, lead_suit)
+    if not trick:
+        non_trump = [c for c in legal if c[0] != trump]
+        pool = non_trump or legal
+        return max(pool, key=lambda c: c[1])
+    winning = [c for c in legal if trick_winner(trick + [(uid, c)], lead_suit, trump) == uid]
+    if winning:
+        return min(winning, key=lambda c: c[1])
+    return min(legal, key=lambda c: (1 if c[0] == trump else 0, c[1]))
+
+
+
 def score_text(room):
     ms = room.data["match_score"]
     tw = room.data["tricks_won"]

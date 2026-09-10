@@ -1,7 +1,8 @@
 import logging
 import random
+import re
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.constants import ChatMemberStatus
 
 from config import CHANNEL_ID, CHANNEL_URL, FREE_GAMES, BRAND_NAME, REFERRAL_REWARD, COINS_PER_DAILY
@@ -10,7 +11,8 @@ from sales import has_license, purchase_link
 from . import social, hokm, hokm_flow
 from .catalog import GAMES, TRUTH, DARE, QUESTIONS, WORDS, LETTERS
 from .engine import (ROOMS, create_room, get_room, close_room, add_player, player_name,
-                      ttt_winner, ttt_move, ttt_ai, new_ludo)
+                      ttt_winner, ttt_move, ttt_ai, new_ludo, is_ai, add_ai_players)
+from .progression import level_info, progress_bar
 
 log = logging.getLogger("hexiron-games.handlers")
 
@@ -18,6 +20,9 @@ log = logging.getLogger("hexiron-games.handlers")
 MIN_PLAYERS = {"hokm": 4, "mafia": 4, "ludo": 2, "werewolf": 4}
 MAX_PLAYERS = {"hokm": 4, "mafia": 8, "ludo": 4, "werewolf": 8}
 GROUP_GAMES = set(MIN_PLAYERS)
+# How many total seats a "🤖 تک‌نفره با هوش مصنوعی" room fills to. Hokm needs
+# exactly 4 (fixed partnerships); the others just use a lively-but-fast size.
+AI_FILL_SIZE = {"hokm": 4, "mafia": 6, "ludo": 4, "werewolf": 6}
 
 
 def menu():
@@ -100,9 +105,15 @@ async def start(update, context):
         except Exception:
             pass
     await update.message.reply_text(
-        f"🎮 {BRAND_NAME}\n\n۱۰ بازی، سیستم Premium، XP، Coins، رتبه‌بندی، دعوت دوستان و اتاق‌های چندنفره.\n\n"
-        "🆓 رایگان: دوز + جرئت/حقیقت\n💎 Premium: ۸ بازی دیگر (یک خرید = فعال شدن همه برای این چت)",
+        f"🎮 {BRAND_NAME}\n\n۱۰ بازی، سیستم سطح/رتبه، XP، Coins، رتبه‌بندی، دعوت دوستان و اتاق‌های چندنفره.\n\n"
+        "🆓 رایگان: دوز + جرئت/حقیقت\n💎 Premium: ۸ بازی دیگر (یک خرید = فعال شدن همه برای این چت)\n\n"
+        "🎮 بازی‌های گروهی (حکم، مافیا، گرگینه، منچ) را می‌توانی با اعضای همین چت یا "
+        "تک‌نفره در برابر هوش مصنوعی شروع کنی.",
         reply_markup=menu())
+    # Persistent bottom keyboard so everyone in this chat can use the bot
+    # without typing any "/" command from here on.
+    await update.message.reply_text("👇 یا از دکمه‌های زیر استفاده کن (بدون نیاز به دستور):",
+                                     reply_markup=MENU_KEYBOARD)
 
 
 async def games(update, context):
@@ -114,8 +125,13 @@ async def profile(update, context):
     register_user(update)
     uid = update.effective_user.id
     r = get_user(uid)
+    lvl = level_info(r["xp"])
+    bar = progress_bar(lvl)
+    next_line = (f"{bar} {lvl['xp_into_level']}/{lvl['xp_for_next_level']} تا سطح بعد"
+                 if lvl["xp_for_next_level"] else "حداکثر سطح!")
     await update.effective_message.reply_text(
-        f"👤 {r['name']}\n⭐ XP: {r['xp']}\n🪙 Coins: {r['coins']}\n"
+        f"👤 {r['name']}\n🎖 سطح {lvl['level']} — {lvl['rank']}\n{next_line}\n\n"
+        f"⭐ XP کل: {r['xp']}\n🪙 Coins: {r['coins']}\n"
         f"🏆 برد: {r['wins']}\n🎮 بازی: {r['games']}\n📈 رتبه: #{rank_of(uid)}\n👥 دعوت: {r['referrals']}")
 
 
@@ -125,7 +141,7 @@ async def top(update, context):
         text = "هنوز بازیکنی ثبت نشده."
     else:
         text = "🏆 TOP 10\n\n" + "\n".join(
-            f"{i}. {r['name']} — ⭐{r['xp']} | 🏆{r['wins']} | 🪙{r['coins']}"
+            f"{i}. {r['name']} — Lv{level_info(r['xp'])['level']} | ⭐{r['xp']} | 🏆{r['wins']} | 🪙{r['coins']}"
             for i, r in enumerate(rows, 1))
     await update.effective_message.reply_text(text)
 
@@ -144,6 +160,45 @@ async def invite(update, context):
     link = f"https://t.me/{me.username}?start=ref_{update.effective_user.id}"
     await update.effective_message.reply_text(
         f"👥 لینک دعوت اختصاصی تو:\n{link}\n\nهر دعوت موفق: +{REFERRAL_REWARD} 🪙 برای تو و دوستت.")
+
+
+async def help_cmd(update, context):
+    await update.effective_message.reply_text(
+        f"📚 {BRAND_NAME}\n\n"
+        "بدون نیاز به هیچ دستوری، فقط از دکمه‌های پایین صفحه استفاده کن:\n"
+        "🎮 بازی‌ها — فهرست بازی‌ها و پنل بازی (برای همه‌ی اعضای گروه)\n"
+        "👤 پروفایل — سطح، رتبه، XP و Coins\n🏆 رتبه‌بندی — برترین بازیکن‌ها\n"
+        "🎁 جایزه روزانه\n👥 دعوت دوستان\n\n"
+        "بازی‌های گروهی (حکم، مافیا، گرگینه، منچ) از داخل «🎮 بازی‌ها» ساخته می‌شوند — "
+        "یا با دوستانِ همین گروه، یا تک‌نفره در برابر هوش مصنوعی.")
+
+
+# --- Non-slash entry point ---------------------------------------------
+# A persistent reply-keyboard so the bot is fully usable inside a group (or
+# anywhere else) without anyone needing to type a "/" command. Once sent to
+# a chat it stays visible to every member there, not just whoever tapped it.
+MENU_BUTTONS = [
+    ["🎮 بازی‌ها", "👤 پروفایل"],
+    ["🏆 رتبه‌بندی", "🎁 جایزه روزانه"],
+    ["👥 دعوت دوستان", "❓ راهنما"],
+]
+MENU_KEYBOARD = ReplyKeyboardMarkup(MENU_BUTTONS, resize_keyboard=True)
+MENU_ROUTES = {
+    "🎮 بازی‌ها": games,
+    "👤 پروفایل": profile,
+    "🏆 رتبه‌بندی": top,
+    "🎁 جایزه روزانه": daily,
+    "👥 دعوت دوستان": invite,
+    "❓ راهنما": help_cmd,
+}
+# Regex alternation of every button label, for main.py's MessageHandler filter.
+MENU_BUTTON_PATTERN = "^(" + "|".join(re.escape(label) for row in MENU_BUTTONS for label in row) + ")$"
+
+
+async def menu_button_router(update, context):
+    handler = MENU_ROUTES.get(update.message.text)
+    if handler:
+        await handler(update, context)
 
 
 async def launch(update, game):
@@ -183,10 +238,12 @@ async def launch(update, game):
         room = create_room(chat, game, uid, name)
         maxp = MAX_PLAYERS[game]
         await update.effective_message.reply_text(
-            f"{GAMES[game][0]}\n\nاتاق ساخته شد (ظرفیت {maxp} نفر). دوستان را اضافه کنید و «شروع» را بزنید.",
+            f"{GAMES[game][0]}\n\nاتاق ساخته شد (ظرفیت {maxp} نفر). دوستان اعضای همین گروه می‌توانند "
+            "«➕ پیوستن» را بزنند، یا همین حالا تک‌نفره با هوش مصنوعی شروع کن:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ پیوستن", callback_data=f"join:{game}"),
                  InlineKeyboardButton("▶️ شروع", callback_data=f"startroom:{game}")],
+                [InlineKeyboardButton("🤖 تک‌نفره با هوش مصنوعی", callback_data=f"aifill:{game}")],
                 [InlineKeyboardButton("❌ بستن اتاق", callback_data="close")]]))
 
 
@@ -207,6 +264,44 @@ async def start_quiz(update):
 
 def ludo_kb(room):
     return InlineKeyboardMarkup([[InlineKeyboardButton("🎲 تاس", callback_data=f"roll:{room.chat_id}")]])
+
+
+async def _begin_group_game(room, context, message):
+    game = room.game
+    if game == "hokm":
+        await hokm_flow.start_hokm(room, context)
+    elif game == "ludo":
+        new_ludo(room)
+        await message.reply_text("🎲 منچ شروع شد. هر نفر با دکمه تاس بازی می‌کند.",
+                                  reply_markup=ludo_kb(room))
+        await _ludo_run_ai_turns(room, message)
+    elif game == "mafia":
+        await social.start_mafia(room, context)
+    elif game == "werewolf":
+        await social.start_werewolf(room, context)
+
+
+async def _ludo_run_ai_turns(room, message):
+    """Auto-roll for consecutive AI-controlled ludo turns, starting right
+    where `room.data['turn']` currently points. Sends at most one combined
+    follow-up message instead of spamming one per AI roll."""
+    log_lines = []
+    while room.game == "ludo" and get_room(room.chat_id) is room and is_ai(room.data.get("turn")):
+        ai_uid = room.data["turn"]
+        n = random.randint(1, 6)
+        room.data["pos"][ai_uid] += n
+        log_lines.append(f"{player_name(room, ai_uid)}: تاس {n} → {room.data['pos'][ai_uid]}/30")
+        if room.data["pos"][ai_uid] >= 30:
+            close_room(room.chat_id)
+            await message.reply_text("\n".join(log_lines) + f"\n\n🏆 {player_name(room, ai_uid)} برنده منچ شد!")
+            return
+        idx = room.players.index(ai_uid)
+        room.data["turn"] = room.players[(idx + 1) % len(room.players)]
+    if log_lines:
+        await message.reply_text(
+            "\n".join(log_lines) + "\n\n" +
+            "\n".join(f"👤 {player_name(room, u)}: {room.data['pos'][u]}/30" for u in room.players),
+            reply_markup=ludo_kb(room))
 
 
 async def callback(update, context):
@@ -310,16 +405,26 @@ async def callback(update, context):
         if len(room.players) < minp:
             await q.message.reply_text(f"حداقل {minp} بازیکن لازم است.")
             return
-        if game == "hokm":
-            await hokm_flow.start_hokm(room, context)
-        elif game == "ludo":
-            new_ludo(room)
-            await q.message.reply_text("🎲 منچ شروع شد. هر نفر با دکمه تاس بازی می‌کند.",
-                                        reply_markup=ludo_kb(room))
-        elif game == "mafia":
-            await social.start_mafia(room, context)
-        elif game == "werewolf":
-            await social.start_werewolf(room, context)
+        await _begin_group_game(room, context, q.message)
+        return
+
+    if d.startswith("aifill:"):
+        room = get_room(q.message.chat.id)
+        if not room or room.host_id != uid:
+            await q.message.reply_text("فقط سازنده اتاق می‌تواند شروع کند.")
+            return
+        game = room.game
+        if room.data:  # already started
+            return
+        target = AI_FILL_SIZE.get(game, MIN_PLAYERS[game])
+        need = max(0, target - len(room.players))
+        add_ai_players(room, need, max_players=MAX_PLAYERS[game])
+        if len(room.players) < MIN_PLAYERS[game]:
+            await q.message.reply_text("خطا در پر کردن اتاق با هوش مصنوعی.")
+            return
+        ai_names = ", ".join(player_name(room, u) for u in room.players if is_ai(u))
+        await q.message.reply_text(f"🤖 اتاق با بازیکن‌های هوش مصنوعی پر شد: {ai_names}")
+        await _begin_group_game(room, context, q.message)
         return
 
     if d == "close":
@@ -350,6 +455,7 @@ async def callback(update, context):
                 "🎲 تاس: " + str(n) + "\n\n" +
                 "\n".join(f"👤 {player_name(room, u)}: {room.data['pos'][u]}/30" for u in room.players),
                 reply_markup=ludo_kb(room))
+            await _ludo_run_ai_turns(room, q.message)
         return
 
     # ---- Mafia night/day callbacks (may arrive from a private DM chat) ----

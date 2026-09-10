@@ -10,7 +10,8 @@ from config import BOT_TOKEN, BRAND_NAME, TELEGRAM_PROXY_URL
 from db import init_db, reward
 from admin import admin, admin_callback, handle_admin_text
 from games.engine import get_room, close_room
-from games.handlers import start, games, profile, top, daily, invite, callback
+from games.handlers import (start, games, profile, top, daily, invite, callback,
+                             help_cmd, menu_button_router, MENU_BUTTON_PATTERN)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 log = logging.getLogger("hexiron-games")
@@ -61,14 +62,6 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ جواب‌ها ثبت شد. +10 XP")
 
 
-async def help_cmd(update, context):
-    await update.message.reply_text(
-        f"📚 {BRAND_NAME}\n\n"
-        "/games — فهرست بازی‌ها\n/profile — پروفایل\n/top — رتبه‌بندی\n"
-        "/daily — جایزه روزانه\n/invite — لینک دعوت\n/help — راهنما\n\n"
-        "بازی‌های گروهی (حکم، مافیا، گرگینه، منچ) از داخل منوی بازی ساخته می‌شوند.")
-
-
 async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
     log.error("خطای پردازش‌نشده هنگام رسیدگی به یک آپدیت:", exc_info=context.error)
 
@@ -110,6 +103,12 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^adm:"))
     app.add_handler(CallbackQueryHandler(callback))
 
+    # Non-slash entry point: the persistent bottom-keyboard buttons (checked
+    # first, via an exact-label regex) so the bot is fully usable in a group
+    # without anyone typing a "/" command. Falls through to text_router below
+    # for anything that isn't one of the known button labels (e.g. in-game
+    # text answers for the word/speed/name games).
+    app.add_handler(MessageHandler(filters.Regex(MENU_BUTTON_PATTERN) & ~filters.COMMAND, menu_button_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
     log.info("%s در حال راه‌اندازی...", BRAND_NAME)

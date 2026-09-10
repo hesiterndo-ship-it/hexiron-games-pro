@@ -4,10 +4,11 @@ group announcements, and scheduling night/day phase timers via JobQueue.
 The actual game-state logic lives in games/mafia.py and games/werewolf.py.
 """
 import logging
+import random
 
 from db import reward
 from . import mafia, werewolf
-from .engine import close_room, get_room
+from .engine import close_room, get_room, is_ai
 from config import (
     MAFIA_NIGHT_SECONDS, MAFIA_DAY_SECONDS,
     WEREWOLF_NIGHT_SECONDS, WEREWOLF_DAY_SECONDS,
@@ -55,21 +56,38 @@ async def announce_mafia_night(room, context):
     room.data["night_doctor_acted"] = False
     room.data["night_detective_acted"] = False
     for m in mafia.alive_mafia(room):
+        if is_ai(m):
+            continue
         await _safe_dm(context, m, "🔪 شب شد. قربانی امشب را انتخاب کن:",
                         reply_markup=mafia.night_targets_keyboard(room, exclude_self=None))
     doctor = next((u for u in room.data["alive"] if room.data["roles"][u] == mafia.DOCTOR_ROLE), None)
-    if doctor:
+    if doctor and not is_ai(doctor):
         await _safe_dm(context, doctor, "💉 امشب چه کسی را نجات می‌دهی؟", reply_markup=mafia.doctor_keyboard(room))
     detective = next((u for u in room.data["alive"] if room.data["roles"][u] == mafia.DETECTIVE_ROLE), None)
-    if detective:
+    if detective and not is_ai(detective):
         await _safe_dm(context, detective, "🔍 امشب چه کسی را بررسی می‌کنی؟",
                         reply_markup=mafia.detective_keyboard(room, detective))
     await context.bot.send_message(
         room.chat_id,
         f"🌙 شب {room.data['round']} — منتظر تصمیم نقش‌های خاص باشید (حداکثر {MAFIA_NIGHT_SECONDS} ثانیه).")
+    # AI seats act immediately (no button to wait on); this lets the readiness
+    # check below fire as soon as the remaining humans finish, or the timeout
+    # job resolves the night if a human is slow/AFK.
+    async with room.lock:
+        for m in mafia.alive_mafia(room):
+            if is_ai(m):
+                others = [u for u in mafia.alive_others(room)]
+                if others:
+                    mafia.register_mafia_vote(room, m, random.choice(others))
+        if doctor and is_ai(doctor):
+            room.data["night_save"] = random.choice(list(room.data["alive"]))
+            room.data["night_doctor_acted"] = True
+        if detective and is_ai(detective):
+            room.data["night_detective_acted"] = True
     job = context.job_queue.run_once(mafia_night_timeout, MAFIA_NIGHT_SECONDS,
                                       chat_id=room.chat_id, name=f"mfnight:{room.chat_id}")
     room.jobs.append(job)
+    await maybe_resolve_mafia_night_early(room, context)
 
 
 def _mafia_night_ready(room):
@@ -120,9 +138,16 @@ async def announce_mafia_day(room, context):
     room.data["phase"] = "day"
     text = f"☀️ روز {room.data['round']} — بحث کنید، سپس رأی بدهید:\n\n{mafia.alive_list_text(room)}"
     await context.bot.send_message(room.chat_id, text, reply_markup=mafia.day_vote_keyboard(room))
+    async with room.lock:
+        for u in room.data["alive"]:
+            if is_ai(u):
+                choices = [t for t in room.data["alive"] if t != u]
+                if choices:
+                    mafia.register_day_vote(room, u, random.choice(choices))
     job = context.job_queue.run_once(mafia_day_timeout, MAFIA_DAY_SECONDS,
                                       chat_id=room.chat_id, name=f"mfday:{room.chat_id}")
     room.jobs.append(job)
+    await maybe_resolve_mafia_day_early(room, context)
 
 
 async def maybe_resolve_mafia_day_early(room, context):
@@ -187,18 +212,29 @@ async def announce_werewolf_night(room, context):
     room.data["phase"] = "night"
     room.data["night_seer_acted"] = False
     for w in werewolf.alive_wolves(room):
+        if is_ai(w):
+            continue
         await _safe_dm(context, w, "🌕 شب شد. طعمه امشب را انتخاب کن:",
                         reply_markup=werewolf.night_targets_keyboard(room))
     seer = next((u for u in room.data["alive"] if room.data["roles"][u] == werewolf.SEER_ROLE), None)
-    if seer:
+    if seer and not is_ai(seer):
         await _safe_dm(context, seer, "🔮 چه کسی را بررسی می‌کنی؟",
                         reply_markup=werewolf.seer_keyboard(room, seer))
     await context.bot.send_message(
         room.chat_id,
         f"🌙 شب {room.data['round']} — منتظر تصمیم گرگینه‌ها باشید (حداکثر {WEREWOLF_NIGHT_SECONDS} ثانیه).")
+    async with room.lock:
+        for w in werewolf.alive_wolves(room):
+            if is_ai(w):
+                others = werewolf.alive_others(room)
+                if others:
+                    werewolf.register_wolf_vote(room, w, random.choice(others))
+        if seer and is_ai(seer):
+            room.data["night_seer_acted"] = True
     job = context.job_queue.run_once(werewolf_night_timeout, WEREWOLF_NIGHT_SECONDS,
                                       chat_id=room.chat_id, name=f"wfnight:{room.chat_id}")
     room.jobs.append(job)
+    await maybe_resolve_werewolf_night_early(room, context)
 
 
 def _werewolf_night_ready(room):
@@ -244,9 +280,16 @@ async def announce_werewolf_day(room, context):
     room.data["phase"] = "day"
     text = f"☀️ روز {room.data['round']} — بحث کنید، سپس رأی بدهید:\n\n{werewolf.alive_list_text(room)}"
     await context.bot.send_message(room.chat_id, text, reply_markup=werewolf.day_vote_keyboard(room))
+    async with room.lock:
+        for u in room.data["alive"]:
+            if is_ai(u):
+                choices = [t for t in room.data["alive"] if t != u]
+                if choices:
+                    werewolf.register_day_vote(room, u, random.choice(choices))
     job = context.job_queue.run_once(werewolf_day_timeout, WEREWOLF_DAY_SECONDS,
                                       chat_id=room.chat_id, name=f"wfday:{room.chat_id}")
     room.jobs.append(job)
+    await maybe_resolve_werewolf_day_early(room, context)
 
 
 async def maybe_resolve_werewolf_day_early(room, context):

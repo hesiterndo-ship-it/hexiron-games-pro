@@ -118,5 +118,5 @@ async def end_hokm(room, context, winner_team):
     await context.bot.send_message(room.chat_id, f"🏆 تیم {winner_team + 1} ({names}) برنده مسابقه حکم شد!")
     for u in room.players:
         win = u in team_players
-        reward(u, xp=30 if win else 10, coins=18 if win else 5, win=win, kind="hokm")
+        reward(u, xp=30 if win else 10, coins=18 if win else 5, win=win, kind="hokm", game="hokm")
     close_room(room.chat_id)

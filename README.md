@@ -155,3 +155,12 @@ games/
 - افزودن Redis برای وضعیت اتاق‌ها اگر روزی بیش از یک instance ربات هم‌زمان
   اجرا شود (فعلاً وضعیت اتاق‌ها در حافظه‌ی پردازش نگه‌داری می‌شود).
 - افزودن پلن رایگان آزمایشی (trial) از سمت Sales.
+
+## Phase 1 — Player progression & statistics
+
+The current build includes migration-safe progression upgrades:
+- Per-game statistics (`played`, `wins`, `losses`, `draws`, XP/Coins earned).
+- Daily reward streak tracking with best streak.
+- Achievement unlocks for first game/win, milestones, coin wealth, streaks, and 5 wins in a specific game.
+- Existing SQLite databases are upgraded automatically on startup; no manual migration command is required.
+- Group rooms remain chat-scoped, so members of the same Telegram group can join the same multiplayer room.

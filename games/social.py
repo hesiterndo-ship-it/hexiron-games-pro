@@ -191,7 +191,7 @@ async def end_mafia(room, context, winner):
     for u in room.players:
         win = (winner == "village" and roles[u] != mafia.MAFIA_ROLE) or \
               (winner == "mafia" and roles[u] == mafia.MAFIA_ROLE)
-        reward(u, xp=25 if win else 8, coins=15 if win else 3, win=win, kind="mafia")
+        reward(u, xp=25 if win else 8, coins=15 if win else 3, win=win, kind="mafia", game="mafia")
     close_room(room.chat_id)
 
 
@@ -333,5 +333,5 @@ async def end_werewolf(room, context, winner):
     for u in room.players:
         win = (winner == "village" and roles[u] != werewolf.WOLF_ROLE) or \
               (winner == "wolves" and roles[u] == werewolf.WOLF_ROLE)
-        reward(u, xp=25 if win else 8, coins=15 if win else 3, win=win, kind="werewolf")
+        reward(u, xp=25 if win else 8, coins=15 if win else 3, win=win, kind="werewolf", game="werewolf")
     close_room(room.chat_id)

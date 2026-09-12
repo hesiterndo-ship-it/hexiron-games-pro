@@ -1,5 +1,6 @@
 import sqlite3
 import time
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from config import DB_PATH
@@ -37,6 +38,8 @@ def init_db():
           referrals INTEGER NOT NULL DEFAULT 0,
           referred_by INTEGER,
           last_daily TEXT,
+          daily_streak INTEGER NOT NULL DEFAULT 0,
+          best_daily_streak INTEGER NOT NULL DEFAULT 0,
           banned INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
@@ -69,8 +72,29 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_users_xp ON users(xp DESC);
         CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS game_stats(
+          user_id INTEGER NOT NULL,
+          game TEXT NOT NULL,
+          played INTEGER NOT NULL DEFAULT 0,
+          wins INTEGER NOT NULL DEFAULT 0,
+          losses INTEGER NOT NULL DEFAULT 0,
+          draws INTEGER NOT NULL DEFAULT 0,
+          xp_earned INTEGER NOT NULL DEFAULT 0,
+          coins_earned INTEGER NOT NULL DEFAULT 0,
+          last_played TEXT,
+          PRIMARY KEY(user_id, game)
+        );
+        CREATE INDEX IF NOT EXISTS idx_game_stats_game ON game_stats(game, wins DESC);
+        CREATE TABLE IF NOT EXISTS achievements(
+          user_id INTEGER NOT NULL,
+          achievement TEXT NOT NULL,
+          unlocked_at TEXT NOT NULL,
+          PRIMARY KEY(user_id, achievement)
+        );
+        CREATE INDEX IF NOT EXISTS idx_achievements_user ON achievements(user_id);
         """)
         _migrate_legacy_licenses(c)
+        _migrate_users(c)
 
 
 def _migrate_legacy_licenses(c):
@@ -83,6 +107,16 @@ def _migrate_legacy_licenses(c):
             c.execute("DROP TABLE licenses")
         except sqlite3.Error:
             pass
+
+
+
+def _migrate_users(c):
+    """Migration-safe additions for databases created by older releases."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+    if "daily_streak" not in cols:
+        c.execute("ALTER TABLE users ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0")
+    if "best_daily_streak" not in cols:
+        c.execute("ALTER TABLE users ADD COLUMN best_daily_streak INTEGER NOT NULL DEFAULT 0")
 
 
 def upsert_user(user_id, name, username=""):
@@ -113,13 +147,56 @@ def set_banned(user_id, banned: bool):
         return c.total_changes > 0
 
 
-def reward(user_id, xp=0, coins=0, win=False, kind="game", meta=""):
+def reward(user_id, xp=0, coins=0, win=False, kind="game", meta="", game=None, draw=False):
+    """Apply a reward and, for game results, atomically update per-game stats."""
     with conn() as c:
+        exists = c.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not exists:
+            return False
         c.execute("""UPDATE users SET xp=xp+?, coins=coins+?, games=games+1,
                      wins=wins+?, updated_at=? WHERE user_id=?""",
                   (xp, coins, 1 if win else 0, now(), user_id))
         c.execute("""INSERT INTO events(user_id,kind,xp,coins,meta,created_at)
                      VALUES(?,?,?,?,?,?)""", (user_id, kind, xp, coins, meta, now()))
+        if game:
+            losses = 0 if win or draw else 1
+            draws = 1 if draw else 0
+            c.execute("""INSERT INTO game_stats(user_id,game,played,wins,losses,draws,xp_earned,coins_earned,last_played)
+                         VALUES(?,?,?,?,?,?,?,?,?)
+                         ON CONFLICT(user_id,game) DO UPDATE SET
+                         played=played+1,wins=wins+excluded.wins,losses=losses+excluded.losses,
+                         draws=draws+excluded.draws,xp_earned=xp_earned+excluded.xp_earned,
+                         coins_earned=coins_earned+excluded.coins_earned,last_played=excluded.last_played""",
+                      (user_id, game, 1, 1 if win else 0, losses, draws, xp, coins, now()))
+            _unlock_achievements(c, user_id, game)
+        return True
+
+
+def _unlock_achievements(c, user_id, game=None):
+    row = c.execute("SELECT games,wins,coins,daily_streak,best_daily_streak FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if not row:
+        return []
+    total_games, wins, coins, streak, best = row
+    rules = [
+        ("first_game", total_games >= 1),
+        ("ten_games", total_games >= 10),
+        ("first_win", wins >= 1),
+        ("ten_wins", wins >= 10),
+        ("rich_500", coins >= 500),
+        ("streak_3", best >= 3),
+        ("streak_7", best >= 7),
+    ]
+    if game:
+        gs = c.execute("SELECT wins FROM game_stats WHERE user_id=? AND game=?", (user_id, game)).fetchone()
+        if gs and gs[0] >= 5:
+            rules.append((f"master_{game}", True))
+    unlocked=[]
+    for key, ok in rules:
+        if ok:
+            cur=c.execute("INSERT OR IGNORE INTO achievements(user_id,achievement,unlocked_at) VALUES(?,?,?)", (user_id,key,now()))
+            if cur.rowcount:
+                unlocked.append(key)
+    return unlocked
 
 
 def add_coins(user_id, coins, kind="coins", meta=""):
@@ -133,21 +210,39 @@ def add_coins(user_id, coins, kind="coins", meta=""):
 def claim_daily(user_id, amount):
     today = datetime.now(timezone.utc).date().isoformat()
     with conn() as c:
-        row = c.execute(
-            "SELECT last_daily FROM users WHERE user_id=?", (user_id,)
-        ).fetchone()
-        if row and row["last_daily"] == today:
+        row = c.execute("SELECT last_daily,daily_streak,best_daily_streak FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not row or row["last_daily"] == today:
             return False
-        updated = c.execute(
-            """UPDATE users SET coins=coins+?, last_daily=?, updated_at=?
-               WHERE user_id=? AND (last_daily IS NULL OR last_daily<>?)""",
-            (amount, today, now(), user_id, today),
-        )
+        streak = int(row["daily_streak"] or 0)
+        if row["last_daily"]:
+            try:
+                last = datetime.fromisoformat(row["last_daily"]).date()
+                delta = (datetime.fromisoformat(today).date() - last).days
+                streak = streak + 1 if delta == 1 else 1
+            except ValueError:
+                streak = 1
+        else:
+            streak = 1
+        best = max(int(row["best_daily_streak"] or 0), streak)
+        updated = c.execute("""UPDATE users SET coins=coins+?, last_daily=?, daily_streak=?, best_daily_streak=?, updated_at=?
+                              WHERE user_id=? AND (last_daily IS NULL OR last_daily<>?)""",
+                           (amount, today, streak, best, now(), user_id, today))
         if updated.rowcount == 0:
             return False
-        c.execute("""INSERT INTO events(user_id,kind,coins,created_at)
-                     VALUES(?,?,?,?)""", (user_id, "daily", amount, now()))
+        c.execute("INSERT INTO events(user_id,kind,coins,meta,created_at) VALUES(?,?,?,?,?)",
+                  (user_id, "daily", amount, json.dumps({"streak":streak}), now()))
+        _unlock_achievements(c, user_id)
         return True
+
+
+def get_game_stats(user_id):
+    with conn() as c:
+        return c.execute("SELECT * FROM game_stats WHERE user_id=? ORDER BY wins DESC,played DESC", (user_id,)).fetchall()
+
+
+def get_achievements(user_id):
+    with conn() as c:
+        return c.execute("SELECT achievement,unlocked_at FROM achievements WHERE user_id=? ORDER BY unlocked_at", (user_id,)).fetchall()
 
 
 def leaderboard(limit=10):

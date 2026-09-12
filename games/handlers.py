@@ -6,7 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 from telegram.constants import ChatMemberStatus
 
 from config import CHANNEL_ID, CHANNEL_URL, FREE_GAMES, BRAND_NAME, REFERRAL_REWARD, COINS_PER_DAILY
-from db import upsert_user, get_user, reward, leaderboard, rank_of, claim_daily, set_referral, is_banned
+from db import upsert_user, get_user, reward, leaderboard, rank_of, claim_daily, set_referral, is_banned, get_game_stats, get_achievements
 from sales import has_license, purchase_link
 from . import social, hokm, hokm_flow
 from .catalog import GAMES, TRUTH, DARE, QUESTIONS, WORDS, LETTERS
@@ -132,7 +132,16 @@ async def profile(update, context):
     await update.effective_message.reply_text(
         f"👤 {r['name']}\n🎖 سطح {lvl['level']} — {lvl['rank']}\n{next_line}\n\n"
         f"⭐ XP کل: {r['xp']}\n🪙 Coins: {r['coins']}\n"
-        f"🏆 برد: {r['wins']}\n🎮 بازی: {r['games']}\n📈 رتبه: #{rank_of(uid)}\n👥 دعوت: {r['referrals']}")
+        f"🏆 برد: {r['wins']}\n🎮 بازی: {r['games']}\n📈 رتبه: #{rank_of(uid)}\n"
+        f"👥 دعوت: {r['referrals']}\n🔥 استریک روزانه: {r['daily_streak']} | رکورد: {r['best_daily_streak']}")
+    stats = get_game_stats(uid)
+    if stats:
+        labels = {"ttt":"دوز","truth":"جرئت/حقیقت","quiz":"Quiz","ludo":"منچ","hokm":"حکم","mafia":"مافیا","werewolf":"گرگینه","name":"اسم‌فامیل","word":"حدس کلمه","speed":"سرعت"}
+        lines = [f"{labels.get(x['game'], x['game'])}: {x['played']} بازی | {x['wins']} برد" for x in stats]
+        await update.effective_message.reply_text("📊 آمار بازی‌ها\n" + "\n".join(lines))
+    ach = get_achievements(uid)
+    if ach:
+        await update.effective_message.reply_text("🏅 دستاوردها: " + "، ".join(x["achievement"] for x in ach))
 
 
 async def top(update, context):
@@ -149,7 +158,8 @@ async def top(update, context):
 async def daily(update, context):
     register_user(update)
     if claim_daily(update.effective_user.id, COINS_PER_DAILY):
-        await update.effective_message.reply_text(f"🎁 جایزه روزانه: +{COINS_PER_DAILY} 🪙")
+        r = get_user(update.effective_user.id)
+        await update.effective_message.reply_text(f"🎁 جایزه روزانه: +{COINS_PER_DAILY} 🪙\n🔥 استریک: {r["daily_streak"]} روز")
     else:
         await update.effective_message.reply_text("⏳ جایزه امروز را قبلاً گرفتی.")
 
@@ -332,7 +342,7 @@ async def callback(update, context):
 
     if d.startswith("truth:"):
         truth = d.endswith(":T")
-        reward(uid, xp=5, coins=2, kind="truth")
+        reward(uid, xp=5, coins=2, kind="truth", game="truth")
         await q.message.reply_text(("❤️ حقیقت: " if truth else "🔥 جرئت: ") + random.choice(TRUTH if truth else DARE))
         return
 
@@ -349,18 +359,18 @@ async def callback(update, context):
         if not ttt_move(b, i):
             return
         if ttt_winner(b, "X"):
-            reward(uid, 20, 10, True, "ttt_win")
+            reward(uid, 20, 10, True, "ttt_win", game="ttt")
             close_room(room.chat_id)
             await q.message.edit_text("🏆 بردی! +20 XP +10 Coins")
             return
         if " " not in b:
-            reward(uid, 8, 4, False, "ttt_draw")
+            reward(uid, 8, 4, False, "ttt_draw", game="ttt", draw=True)
             close_room(room.chat_id)
             await q.message.edit_text("🤝 مساوی شد.")
             return
         ttt_ai(b)
         if ttt_winner(b, "O"):
-            reward(uid, 5, 2, False, "ttt_loss")
+            reward(uid, 5, 2, False, "ttt_loss", game="ttt")
             close_room(room.chat_id)
             await q.message.edit_text("🤖 ربات برنده شد. دفعه بعد می‌بری!")
             return
@@ -376,7 +386,7 @@ async def callback(update, context):
             await q.answer("این کوییز متعلق به شما نیست.", show_alert=True)
             return
         ok = int(idx_s) == room.data["correct"]
-        reward(uid, 15 if ok else 3, 7 if ok else 1, ok, "quiz")
+        reward(uid, 15 if ok else 3, 7 if ok else 1, ok, "quiz", game="quiz")
         close_room(room.chat_id)
         await q.message.edit_text("🏆 جواب درست بود! +15 XP +7 Coins" if ok else "❌ جواب اشتباه بود.")
         return
@@ -447,7 +457,7 @@ async def callback(update, context):
         idx = room.players.index(uid)
         room.data["turn"] = room.players[(idx + 1) % len(room.players)]
         if room.data["pos"][uid] >= 30:
-            reward(uid, 35, 20, True, "ludo_win")
+            reward(uid, 35, 20, True, "ludo_win", game="ludo")
             close_room(room.chat_id)
             await q.message.edit_text(f"🏆 {q.from_user.full_name} برنده منچ شد!")
         else:

@@ -27,6 +27,7 @@ from games.handlers import (
     invite,
     callback,
     help_cmd,
+    set_channel,
     menu_button_router,
     MENU_BUTTON_PATTERN,
 )
@@ -159,6 +160,7 @@ def build_application():
     app.add_handler(CommandHandler("invite", invite))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("setchannel", set_channel))
 
     # Admin callbacks first
     app.add_handler(

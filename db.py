@@ -92,6 +92,7 @@ def init_db():
           PRIMARY KEY(user_id, achievement)
         );
         CREATE INDEX IF NOT EXISTS idx_achievements_user ON achievements(user_id);
+        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
         """)
         _migrate_legacy_licenses(c)
         _migrate_users(c)
@@ -117,6 +118,21 @@ def _migrate_users(c):
         c.execute("ALTER TABLE users ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0")
     if "best_daily_streak" not in cols:
         c.execute("ALTER TABLE users ADD COLUMN best_daily_streak INTEGER NOT NULL DEFAULT 0")
+
+
+def get_setting(key, default=""):
+    with conn() as c:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key, value):
+    with conn() as c:
+        c.execute(
+            "INSERT INTO settings(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
 
 
 def upsert_user(user_id, name, username=""):

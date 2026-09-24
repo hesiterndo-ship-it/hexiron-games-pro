@@ -5,8 +5,9 @@ import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.constants import ChatMemberStatus
 
-from config import CHANNEL_ID, CHANNEL_URL, FREE_GAMES, BRAND_NAME, REFERRAL_REWARD, COINS_PER_DAILY
-from db import upsert_user, get_user, reward, leaderboard, rank_of, claim_daily, set_referral, is_banned, get_game_stats, get_achievements
+from config import CHANNEL_ID, CHANNEL_URL, FREE_GAMES, BRAND_NAME, REFERRAL_REWARD, COINS_PER_DAILY, OWNER_ID, ADMIN_IDS
+from db import (upsert_user, get_user, reward, leaderboard, rank_of, claim_daily, set_referral,
+                 is_banned, get_game_stats, get_achievements, get_setting, set_setting)
 from sales import has_license, purchase_link
 from . import social, hokm, hokm_flow
 from .catalog import GAMES, TRUTH, DARE, QUESTIONS, WORDS, LETTERS
@@ -39,15 +40,31 @@ def menu():
     return InlineKeyboardMarkup(rows)
 
 
+def channel_id():
+    """کانال اجباری فعلی - اول تنظیمات دیتابیس (قابل تغییر با /setchannel)، بعد env."""
+    return get_setting("free_channel_id", "") or CHANNEL_ID
+
+
+def channel_url():
+    link = get_setting("free_channel_url", "")
+    if link:
+        return link
+    cid = channel_id()
+    if cid.startswith("@"):
+        return f"https://t.me/{cid.lstrip('@')}"
+    return CHANNEL_URL or "https://t.me/"
+
+
 async def member_ok(bot, uid):
-    if not CHANNEL_ID:
-        return True
+    cid = channel_id()
+    if not cid:
+        return True, None
     try:
-        m = await bot.get_chat_member(CHANNEL_ID, uid)
-        return m.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+        m = await bot.get_chat_member(cid, uid)
+        return m.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER), None
     except Exception as e:
         log.info("بررسی عضویت کانال برای %s ناموفق بود: %s", uid, e)
-        return False
+        return False, str(e)
 
 
 async def gate(update, game):
@@ -63,8 +80,15 @@ async def gate(update, game):
         return False
 
     if game in FREE_GAMES:
-        if not await member_ok(update.get_bot(), uid):
-            kb = [[InlineKeyboardButton("📢 عضویت در کانال", url=CHANNEL_URL or "https://t.me/")],
+        ok, err = await member_ok(update.get_bot(), uid)
+        if err and uid in ADMIN_IDS:
+            await update.effective_message.reply_text(
+                f"⚠️ چک عضویت شکست خورد:\n`{err}`\nشناسه‌ی کانال: `{channel_id()}`\n\n"
+                "این متن رو برای بررسی نگه دار (احتمالاً ربات توی کانال ادمین نیست).",
+                parse_mode="Markdown")
+            return False
+        if not ok:
+            kb = [[InlineKeyboardButton("📢 عضویت در کانال", url=channel_url())],
                   [InlineKeyboardButton("✅ بررسی عضویت", callback_data=f"check:{game}")]]
             await update.effective_message.reply_text(
                 "🔒 برای بازی‌های رایگان ابتدا عضو کانال شوید.", reply_markup=InlineKeyboardMarkup(kb))
@@ -170,6 +194,52 @@ async def invite(update, context):
     link = f"https://t.me/{me.username}?start=ref_{update.effective_user.id}"
     await update.effective_message.reply_text(
         f"👥 لینک دعوت اختصاصی تو:\n{link}\n\nهر دعوت موفق: +{REFERRAL_REWARD} 🪙 برای تو و دوستت.")
+
+
+async def set_channel(update, context):
+    """پنل ادمین (فقط OWNER_ID/ADMIN_IDS) - تنظیم کانال اجباری برای بازی‌های رایگان،
+    بدون نیاز به تغییر env و ری‌دیپلوی."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    parts = update.message.text.split(maxsplit=2)
+    if len(parts) < 2:
+        return await update.message.reply_text(
+            "برای تنظیم کانال اجباریِ بازی‌های رایگان، یکی از این‌ها رو بفرست:\n"
+            "/setchannel @channelusername\n"
+            "/setchannel https://t.me/channelusername\n"
+            "یا برای کانال خصوصی (حتماً هر دو رو بده):\n"
+            "/setchannel -100XXXXXXXXXX https://t.me/+XXXXXXXX\n\n"
+            f"شناسه‌ی فعلی: {channel_id() or 'تنظیم نشده'}\n"
+            f"لینک فعلی: {channel_url()}\n\n"
+            "برای غیرفعال‌کردن کامل: /setchannel off")
+
+    value = parts[1].strip()
+    if value.lower() == "off":
+        set_setting("free_channel_id", "")
+        set_setting("free_channel_url", "")
+        return await update.message.reply_text("✅ کانال اجباری بازی‌های رایگان غیرفعال شد.")
+
+    explicit_link = parts[2].strip() if len(parts) > 2 else ""
+    new_id, link, warn = value, explicit_link, ""
+
+    if value.startswith("http") or value.startswith("t.me/"):
+        if not link:
+            link = value if value.startswith("http") else f"https://{value}"
+        m = re.search(r"t\.me/([A-Za-z0-9_]{5,})/?$", value)
+        if m and not value.rstrip("/").split("/")[-1].startswith("+"):
+            new_id = "@" + m.group(1)
+        else:
+            warn = ("\n\n⚠️ چون این یک لینک دعوت خصوصیه (نه لینک عمومی کانال)، ربات نمی‌تونه با همین "
+                    "به‌تنهایی عضویت رو خودکار چک کنه. برای چک خودکار، شناسه‌ی عددی کانال رو هم بفرست:\n"
+                    "/setchannel -100XXXXXXXXXX " + link)
+    elif value.startswith("@") and not link:
+        link = f"https://t.me/{value.lstrip('@')}"
+
+    set_setting("free_channel_id", new_id)
+    set_setting("free_channel_url", link)
+    await update.message.reply_text(
+        f"✅ کانال اجباری بازی‌های رایگان تنظیم شد.\nشناسه: {new_id}\nلینک عضویت: {link or '—'}{warn}\n\n"
+        "⚠️ یادت نره: ربات باید توی این کانال ادمین باشه، وگرنه نمی‌تونه عضویت رو چک کنه.")
 
 
 async def help_cmd(update, context):
@@ -325,9 +395,13 @@ async def callback(update, context):
         return
 
     if d.startswith("check:"):
-        g = d.split(":")[1]
-        await q.message.reply_text(
-            "✅ عضویت تأیید شد." if await member_ok(context.bot, uid) else "❌ هنوز عضو کانال نیستی.")
+        ok, err = await member_ok(context.bot, uid)
+        if err and uid in ADMIN_IDS:
+            await q.message.reply_text(
+                f"⚠️ چک عضویت شکست خورد:\n`{err}`\nشناسه‌ی کانال: `{channel_id()}`",
+                parse_mode="Markdown")
+        else:
+            await q.message.reply_text("✅ عضویت تأیید شد." if ok else "❌ هنوز عضو کانال نیستی.")
         return
     if d == "profile":
         return await profile(update, context)
